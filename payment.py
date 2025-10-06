@@ -1,11 +1,11 @@
-# payment.py
 import stripe
-import time
-from database import set_vip, log_event
 
-stripe.api_key = "sk_test_51NRKXaEXAMPLEKEYKENDİNDEĞİŞTİR"
+# 🧠 Stripe gizli anahtarını buraya doğrudan yaz (test modunu kullan!)
+# Örnek: sk_test_51ABCDEFxxxxx
+STRIPE_SECRET_KEY = "whsec_GboKrzXA2Pz2t5Z21DRBAZYa9RbORZ0W"  # 👈 kendi test anahtarını buraya yapıştır
 
-BASE_URL = "https://birsohbet.vip"
+stripe.api_key = STRIPE_SECRET_KEY
+
 
 def create_checkout_session(user_id):
     try:
@@ -13,27 +13,20 @@ def create_checkout_session(user_id):
             payment_method_types=["card"],
             line_items=[{
                 "price_data": {
-                    "currency": "try",
-                    "product_data": {"name": "BirSohbet VIP Üyelik"},
-                    "unit_amount": 1000,  # 10 TL
+                    "currency": "usd",
+                    "product_data": {"name": "BirSohbet Bağış"},
+                    "unit_amount": 500,  # 5 USD (500 cent)
                 },
                 "quantity": 1,
             }],
             mode="payment",
-           success_url=f"https://birsohbet.vip/success/{user_id}",
-           cancel_url=f"https://birsohbet.vip/cancel/{user_id}",
-
+            success_url="https://t.me/BirSohbetBot?start=success",
+            cancel_url="https://t.me/BirSohbetBot?start=cancel",
+            metadata={"user_id": user_id}
         )
-        log_event(f"Stripe ödeme linki oluşturuldu -> {user_id}")
+        print(f"✅ Stripe session oluşturuldu: {session.url}")
         return session.url
+
     except Exception as e:
-        log_event(f"Stripe hata -> {e}")
+        print(f"❌ [Stripe Hatası]: {e}")
         return None
-
-
-def confirm_payment(user_id):
-    """Test için otomatik VIP onayı"""
-    time.sleep(1)
-    set_vip(user_id)
-    log_event(f"VIP üyelik onaylandı -> {user_id}")
-    return True

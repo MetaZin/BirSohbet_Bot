@@ -1,46 +1,188 @@
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
+    MessageHandler, filters, ContextTypes
+)
 from config import BOT_TOKEN
-from database import init_db, set_vip, is_vip, log_event, get_vip_statuses
-import sqlite3
+from database import init_db, register_user, get_user_preferences, log_event
 import asyncio
-import threading
-from datetime import datetime
+import sqlite3
 
 waiting_users = []
 active_chats = {}
+pending_registrations = {}
 
 init_db()
-ADMIN_IDS = [5469215864]  # 👈 kendi Telegram ID’in
+ADMIN_IDS = [5469215864]  # senin Telegram ID’in
 
-# /start komutu
+
+# 📸 /start — sadece giriş ekranı
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    keyboard = [
+        [InlineKeyboardButton("🪪 Kayıt Ol", callback_data="kayit_basla")],
+        [InlineKeyboardButton("💖 Destek Ol (Bağış)", url="https://www.buymeacoffee.com/birsohbet")],
+        [InlineKeyboardButton("💬 Sohbete Başla", callback_data="sohbet_basla")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-    if user_id in active_chats:
-        await update.message.reply_text("❗ Zaten bir sohbette bulunuyorsun. Yeni eşleşme için /next yaz.")
+    welcome_text = (
+        "🤖 *BirSohbet'e Hoş Geldin!*\n\n"
+        "🕊️ Bu platform tamamen *ücretsiz*, *anonim* ve *güvenli* bir sohbet deneyimi sunar.\n"
+        "💬 Yeni insanlarla tanışabilir, gizliliğini koruyarak yazışabilirsin.\n\n"
+        "💖 Geliştirilmesine katkı sağlamak istersen bağış yapabilirsin.\n\n"
+        "🔒 Kişisel bilgiler toplanmaz ve tüm konuşmalar gizlidir.\n\n"
+        "_Lütfen anonim kalmak için özel bilgilerini paylaşma._"
+    )
+
+    photo_url = "https://i.imgur.com/HZbQJtW.jpeg"
+
+    try:
+        await update.message.reply_photo(
+            photo=photo_url,
+            caption=welcome_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+    except:
+        await context.bot.send_photo(
+            chat_id=update.effective_chat.id,
+            photo=photo_url,
+            caption=welcome_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+
+
+# 📋 “Kayıt Ol” veya “Sohbete Başla” butonu
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    if query.data == "kayit_basla":
+        pending_registrations[user_id] = {"step": "nick"}
+        await query.message.reply_text("🪪 Lütfen bir *takma ad (nick)* yaz:")
+        log_event(f"Kayıt süreci başladı -> {user_id}")
+
+    elif query.data == "sohbet_basla":
+        await sohbet(update, context, from_button=True)
+
+
+# ✏️ Kayıt süreci
+async def handle_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+
+    if user_id not in pending_registrations:
         return
 
-    if waiting_users and waiting_users[0] != user_id:
-        vip_waiters = [u for u in waiting_users if is_vip(u)]
-        if vip_waiters:
-            partner_id = vip_waiters[0]
-            waiting_users.remove(partner_id)
-        else:
-            partner_id = waiting_users.pop(0)
+    step = pending_registrations[user_id]["step"]
 
-        active_chats[user_id] = partner_id
-        active_chats[partner_id] = user_id
-        await context.bot.send_message(chat_id=user_id, text="🎯 Bir kişiyle eşleştirildin! Sohbete başlayabilirsin 💬")
-        await context.bot.send_message(chat_id=partner_id, text="🎯 Bir kişiyle eşleştirildin! Sohbete başlayabilirsin 💬")
-        log_event(f"User {user_id} eşleşti -> {partner_id}")
+    if step == "nick":
+        pending_registrations[user_id]["nick"] = text
+        pending_registrations[user_id]["step"] = "gender"
+        await update.message.reply_text("👤 Cinsiyetini yaz (erkek / kadın / gey / lezbiyen):")
+
+    elif step == "gender":
+        gender = text.lower()
+        valid_genders = ["erkek", "kadın", "gey", "lezbiyen"]
+        if gender not in valid_genders:
+            await update.message.reply_text("⚠️ Geçerli cinsiyetler: erkek, kadın, gey, lezbiyen")
+            return
+        pending_registrations[user_id]["gender"] = gender
+        pending_registrations[user_id]["step"] = "target"
+        await update.message.reply_text("🎯 Aradığın cinsiyeti yaz (kadın / erkek / gey / lezbiyen):")
+
+    elif step == "target":
+        target = text.lower()
+        valid_genders = ["erkek", "kadın", "gey", "lezbiyen"]
+        if target not in valid_genders:
+            await update.message.reply_text("⚠️ Geçerli cinsiyetler: erkek, kadın, gey, lezbiyen")
+            return
+
+        info = pending_registrations[user_id]
+        nickname, gender = info["nick"], info["gender"]
+        register_user(user_id, nickname, gender, target)
+        del pending_registrations[user_id]
+
+        await update.message.reply_text(
+            f"✅ Kayıt tamamlandı, {nickname}!\n"
+            f"Sen: {gender.capitalize()}, aradığın: {target.capitalize()}\n\n"
+            "Artık *💬 Sohbete Başla* butonuna basarak eşleşmeye başlayabilirsin."
+        )
+        log_event(f"Kayıt tamamlandı -> {user_id} ({gender} arıyor: {target})")
+
+
+# 💬 Sohbet başlatma
+async def sohbet(update: Update, context: ContextTypes.DEFAULT_TYPE, from_button=False):
+    if from_button:
+        user_id = update.callback_query.from_user.id
     else:
-        waiting_users.append(user_id)
-        msg = "🌟 VIP kullanıcı olarak öncelikli sıradasın." if is_vip(user_id) else "🔎 Eşleşme bekleniyor..."
-        await update.message.reply_text(msg)
-        log_event(f"User {user_id} beklemeye alındı")
+        user_id = update.effective_user.id
 
-# /next komutu
+    user_gender, target_gender = get_user_preferences(user_id)
+
+    if not user_gender:
+        if from_button:
+            await context.bot.send_message(chat_id=user_id, text="ℹ️ Önce kayıt olmalısın.")
+        else:
+            await update.message.reply_text("ℹ️ Önce kayıt olmalısın (/start).")
+        return
+
+    if user_id in active_chats:
+        msg = "❗ Zaten bir sohbette bulunuyorsun. /next yazabilirsin."
+        if from_button:
+            await context.bot.send_message(chat_id=user_id, text=msg)
+        else:
+            await update.message.reply_text(msg)
+        return
+
+    # 🎯 Önce tercih eşleşmesi aranır
+    for partner_id in waiting_users:
+        p_gender, p_target = get_user_preferences(partner_id)
+        if p_gender and p_target and p_gender == target_gender and p_target == user_gender:
+            waiting_users.remove(partner_id)
+            active_chats[user_id] = partner_id
+            active_chats[partner_id] = user_id
+
+            conn = sqlite3.connect("birsohbet.db")
+            c = conn.cursor()
+            c.execute("SELECT nickname, gender FROM users WHERE user_id=?", (user_id,))
+            user_info = c.fetchone()
+            c.execute("SELECT nickname, gender FROM users WHERE user_id=?", (partner_id,))
+            partner_info = c.fetchone()
+            conn.close()
+
+            user_nick, user_g = user_info or ("Bilinmiyor", "?")
+            partner_nick, partner_g = partner_info or ("Bilinmiyor", "?")
+
+            await context.bot.send_message(chat_id=user_id, text=f"🎯 {partner_nick} ({partner_g}) ile eşleştirildin 💬")
+            await context.bot.send_message(chat_id=partner_id, text=f"🎯 {user_nick} ({user_g}) ile eşleştirildin 💬")
+            log_event(f"Eşleşme (tercih) -> {user_id}:{user_nick} <-> {partner_id}:{partner_nick}")
+            return
+
+    # ⏳ Bekleme listesi
+    waiting_users.append(user_id)
+    await context.bot.send_message(chat_id=user_id, text="🔎 Uygun eşleşme aranıyor (1 dakika)...")
+    log_event(f"Bekleme -> {user_id} ({user_gender} arıyor: {target_gender})")
+
+    await asyncio.sleep(60)
+
+    if user_id in waiting_users:
+        waiting_users.remove(user_id)
+        if waiting_users:
+            partner_id = waiting_users.pop(0)
+            active_chats[user_id] = partner_id
+            active_chats[partner_id] = user_id
+
+            await context.bot.send_message(chat_id=user_id, text="⚡ Kimse bulunamadı, rastgele biriyle eşleştirildin 💬")
+            await context.bot.send_message(chat_id=partner_id, text="⚡ Kimse bulunamadı, rastgele biriyle eşleştirildin 💬")
+            log_event(f"Eşleşme (rastgele) -> {user_id} <-> {partner_id}")
+        else:
+            await context.bot.send_message(chat_id=user_id, text="⏳ Şu anda kimse yok. Birazdan tekrar dene.")
+
+
+# 🔁 /next
 async def next_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in active_chats:
@@ -48,87 +190,28 @@ async def next_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         active_chats.pop(partner_id, None)
         await context.bot.send_message(chat_id=partner_id, text="❌ Karşı taraf sohbeti sonlandırdı.")
         await update.message.reply_text("🔁 Yeni eşleşme aranıyor...")
-        log_event(f"User {user_id} /next komutu verdi (önceki partner: {partner_id})")
-        await start(update, context)
+        await sohbet(update, context)
     else:
         await update.message.reply_text("🔁 Şu anda kimseyle konuşmuyorsun. /start yazabilirsin.")
 
-# /stop komutu
+
+# 🛑 /stop
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in active_chats:
         partner_id = active_chats.pop(user_id)
         active_chats.pop(partner_id, None)
         await context.bot.send_message(chat_id=partner_id, text="❌ Karşı taraf sohbeti bitirdi.")
-        log_event(f"User {user_id} sohbeti sonlandırdı (partner: {partner_id})")
         await update.message.reply_text("✅ Sohbet sonlandırıldı.")
+        log_event(f"Sohbet sonlandırıldı -> {user_id}")
     elif user_id in waiting_users:
         waiting_users.remove(user_id)
-        log_event(f"User {user_id} bekleme listesinden çıktı.")
         await update.message.reply_text("🚫 Eşleşme beklemesinden çıktın.")
     else:
         await update.message.reply_text("Zaten bir sohbette değilsin.")
 
-# /vip komutu
-from payment import create_checkout_session, confirm_payment
 
-async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    if is_vip(user_id):
-        await update.message.reply_text("✅ Zaten aktif bir VIP üyeliğin var 🌟")
-        return
-
-    await update.message.reply_text("💳 VIP ödeme bağlantısı hazırlanıyor...")
-
-    payment_url = create_checkout_session(user_id)
-    if payment_url:
-        await update.message.reply_text(
-            f"🌟 Haftalık VIP Üyelik (10 TL)\n\n"
-            f"👉 [Stripe üzerinden öde]({payment_url})\n\n"
-            "💡 Ödeme tamamlandıktan sonra VIP üyeliğin otomatik aktif olur.",
-            parse_mode="Markdown",
-        )
-    else:
-        await update.message.reply_text("⚠️ Ödeme bağlantısı oluşturulamadı. Lütfen daha sonra tekrar dene.")
-
-# /makevip komutu (Admin)
-async def make_vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ Bu komutu kullanma yetkin yok.")
-        return
-    if len(context.args) != 1:
-        await update.message.reply_text("Kullanım: /makevip <user_id>")
-        return
-    target_id = int(context.args[0])
-    set_vip(target_id)
-    await update.message.reply_text(f"🌟 Kullanıcı {target_id} artık VIP olarak ayarlandı!")
-    log_event(f"ADMIN {user_id} kullanıcıyı VIP yaptı -> {target_id}")
-
-# /panel komutu
-async def panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ Bu komutu kullanma yetkin yok.")
-        return
-
-    conn = sqlite3.connect("birsohbet.db")
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM users WHERE is_vip=1")
-    vip_count = c.fetchone()[0]
-    conn.close()
-
-    msg = (
-        "📊 *BirSohbet Durum Paneli*\n\n"
-        f"👥 Aktif sohbetler: {len(active_chats)//2}\n"
-        f"🕒 Bekleyen kullanıcılar: {len(waiting_users)}\n"
-        f"🌟 VIP üyeler: {vip_count}\n"
-        f"📅 Günlük log dosyası: birsohbet.log\n"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-# Mesaj yönlendirme
+# 💬 Mesaj yönlendirme
 async def relay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in active_chats:
@@ -136,59 +219,21 @@ async def relay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=partner_id, text=update.message.text)
         log_event(f"Mesaj: {user_id} → {partner_id}")
 
-# 🔔 Günlük rapor fonksiyonu
-async def daily_report_task(app):
-    log_event("📊 Günlük rapor sistemi başlatıldı...")
-    await app.bot.send_message(chat_id=ADMIN_IDS[0], text="⏳ Günlük rapor sistemi başlatıldı...")
 
-    while True:
-        now = datetime.now()
-        if now.hour == 5 and now.minute == 0:  # Her akşam 20:00
-            vip_statuses = get_vip_statuses()
-            expiring = [uid for uid, days in vip_statuses if 0 <= days <= 1]
-
-            msg = (
-                "📅 *Günlük BirSohbet Özeti*\n\n"
-                f"👥 Aktif sohbetler: {len(active_chats)//2}\n"
-                f"🕒 Bekleyen kullanıcılar: {len(waiting_users)}\n"
-                f"🌟 VIP üyeler: {len(vip_statuses)}\n"
-                f"⚠️ Süresi dolmak üzere: {len(expiring)}\n\n"
-                "🗂️ Log dosyası: birsohbet.log"
-            )
-
-            log_event("📊 Günlük rapor oluşturuldu:\n" + msg.replace("\n", " | "))
-            await app.bot.send_message(chat_id=ADMIN_IDS[0], text=msg, parse_mode="Markdown")
-
-            await asyncio.sleep(60)
-        await asyncio.sleep(60)
-
-
-# 🔹 Arka plan thread başlatıcı
-def start_background_tasks():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.create_task(daily_report_task(app))
-    loop.run_forever()
-
-# ✅ Hatasız main fonksiyonu
+# 🚀 Ana çalışma
 def main():
-    global app
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(CommandHandler("next", next_chat))
     app.add_handler(CommandHandler("stop", stop))
-    app.add_handler(CommandHandler("vip", vip))
-    app.add_handler(CommandHandler("makevip", make_vip))
-    app.add_handler(CommandHandler("panel", panel))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_registration))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, relay))
 
-    print("🚀 BirSohbet Günlük Rapor Sistemi aktif!")
-
-    # 🔹 Günlük rapor sistemi ayrı thread’de çalışacak
-    threading.Thread(target=start_background_tasks, daemon=True).start()
-
-    # 🔹 Telegram botu başlat
+    print("🚀 BirSohbet v3.1 (Giriş ekranı + Sohbet butonu) aktif!")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()

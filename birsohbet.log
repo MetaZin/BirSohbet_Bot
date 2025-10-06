@@ -18,3 +18,4 @@ us know at support@stripe.com.
 
 (Network error: A UnicodeEncodeError was raised with error message 'latin-1' codec can't encode character '\u0130' in position 36: ordinal not in range(256))
 [2025-10-06 16:22:07] User 5469215864 beklemeye alındı
+[2025-10-07 01:27:39] Kayıt süreci başladı -> 5469215864

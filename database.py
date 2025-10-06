@@ -1,104 +1,60 @@
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
 
-# 📁 Veritabanı ve log yolları
-DB_NAME = os.path.join(os.path.dirname(__file__), "birsohbet.db")
-
-# Masaüstüne otomatik log kaydı
-DESKTOP_PATH = os.path.join(os.path.expanduser("~"), "Desktop", "BirSohbet_Loglar")
-os.makedirs(DESKTOP_PATH, exist_ok=True)
-
-def _get_log_path():
-    """Her gün için ayrı log dosyası üretir."""
-    tarih = datetime.now().strftime("%Y-%m-%d")
-    return os.path.join(DESKTOP_PATH, f"BirSohbet_Log_{tarih}.txt")
+DB_NAME = "birsohbet.db"
+LOG_FILE = "birsohbet.log"
 
 
-# 🧱 Veritabanı başlatma
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY,
-                    is_vip INTEGER DEFAULT 0,
-                    vip_until TEXT
+                    nickname TEXT,
+                    gender TEXT,
+                    target_gender TEXT
                 )''')
     conn.commit()
     conn.close()
 
 
-# 🌟 VIP üyelik ekleme / yenileme
-def set_vip(user_id, days=7):
+def register_user(user_id, nickname, gender, target_gender):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    vip_until = datetime.now() + timedelta(days=days)
-    c.execute("""
-        INSERT OR REPLACE INTO users (user_id, is_vip, vip_until)
-        VALUES (?, ?, ?)
-    """, (user_id, 1, vip_until.strftime("%Y-%m-%d %H:%M:%S")))
+    c.execute(
+        "INSERT OR REPLACE INTO users (user_id, nickname, gender, target_gender) VALUES (?, ?, ?, ?)",
+        (user_id, nickname, gender.lower(), target_gender.lower()),
+    )
     conn.commit()
     conn.close()
-    log_event(f"🌟 VIP aktif edildi -> {user_id} ({days} gün)")
+    log_event(f"Kayıt -> {user_id} | {nickname} | {gender} arıyor: {target_gender}")
 
 
-# 🔍 VIP durumu kontrolü
-def is_vip(user_id):
+def get_user_preferences(user_id):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute("SELECT is_vip, vip_until FROM users WHERE user_id=?", (user_id,))
+    c.execute("SELECT gender, target_gender FROM users WHERE user_id=?", (user_id,))
     row = c.fetchone()
     conn.close()
-
-    if not row:
-        return False
-
-    active, vip_until = row
-    if active == 1 and vip_until:
-        expire_date = datetime.strptime(vip_until, "%Y-%m-%d %H:%M:%S")
-        return expire_date > datetime.now()
-
-    return False
+    return row if row else (None, None)
 
 
-# 🧾 Gelişmiş log kaydı (UTF-8, günlük dosya)
-def log_event(text):
-    try:
-        log_path = _get_log_path()
-        timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
-        line = f"{timestamp} {text}\n"
-
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(line)
-
-    except Exception as e:
-        print(f"[LOG HATASI] {e}")
-        # Yedek olarak ana klasöre kaydet
-        try:
-            fallback_path = os.path.join(os.path.dirname(__file__), "birsohbet_fallback.log")
-            with open(fallback_path, "a", encoding="utf-8") as f:
-                f.write(f"[{datetime.now()}] Log kaydedilemedi: {e}\n")
-        except:
-            pass
-
-
-# 📅 VIP kalan günleri hesapla
-def get_vip_statuses():
+def get_gender_counts():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute("SELECT user_id, vip_until FROM users WHERE is_vip=1")
-    rows = c.fetchall()
+    c.execute("SELECT gender, COUNT(*) FROM users GROUP BY gender")
+    data = c.fetchall()
     conn.close()
+    return {gender: count for gender, count in data}
 
-    results = []
-    for uid, vip_until in rows:
-        if not vip_until:
-            continue
-        try:
-            expire_date = datetime.strptime(vip_until, "%Y-%m-%d %H:%M:%S")
-            days_left = (expire_date - datetime.now()).days
-            results.append((uid, days_left))
-        except Exception as e:
-            log_event(f"⚠️ VIP hesaplama hatası -> {uid}: {e}")
 
-    return results
+def log_event(text):
+    try:
+        timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
+        line = f"{timestamp} {text}\n"
+        os.makedirs(os.path.dirname(LOG_FILE) or ".", exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception as e:
+        print(f"[LOG HATASI] {e}")
